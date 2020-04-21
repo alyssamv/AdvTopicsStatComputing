@@ -1,0 +1,279 @@
+---
+title: "Homework 2 on Newton's methods"
+author: "Alyssa Vanderbeek (amv2187)"
+date: "Due: 03/18/2020, Wednesday, by 1pm"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tidyverse)
+library(MASS)
+library(mvtnorm)
+library(data.table)
+library(cluster)
+```
+
+# Problem 1
+Design an optimization algorithm to find the minimum of the continuously differentiable function $f(x) =-e^{-1}\sin(x)$ on the closed interval $[0,1.5]$. Write out your algorithm and implement it into \textbf{R}.
+
+
+```{r }
+# Golden section search
+
+f = function(x){
+  y = -exp(-x)*sin(x)
+  return(y)
+}
+
+a = 0
+b = 1.5
+w = 0.618
+
+#optimize(f, lower = 0, upper = 1.5, maximum = FALSE) # truth
+tol = 1e-10 # .Machine$double.eps^0.25 # tolerance with which to accept estimate of minimum
+
+# beginning values of intervals
+x1 = a
+x2 = (a + b)*w
+
+while (x2 - x1 > tol) { # while the size of the interval is greater than our tolerance level
+  f1 = f(x1)
+  f2 = f(x2)
+
+  # evaluate values for interval and reassign new interval values
+  if (f1 > f2) { # if f1 > f2, move to the right of x2
+    x1 = x2
+    x2 = x1 + (1 - w)*(b - x1)
+  } else {
+    x1 = x1
+    x2 = x2 - w*(x2 - x1)
+  }
+}
+
+min(f1, f2) # estimate of minimum on given interval
+
+```
+
+The minimum is `r min(f1, f2)`.
+
+# Problem 2
+The Poisson distribution is often used to model ``count'' data ---
+e.g., the number of events in a given time period.  
+The Poisson regression model states that
+$$Y_i \sim \textrm{Poisson}(\lambda_i),$$
+where
+$$\log \lambda_i = \alpha + \beta x_i $$
+ for some explanatory variable
+$x_i$.  The question is how to estimate $\alpha$ and $\beta$ given a
+set of independent data $(x_1, Y_1), (x_2, Y_2), \ldots, (x_n, Y_n)$.
+\begin{enumerate}
+\item Modify the Newton-Raphson function from the class notes to include
+a step-halving step.
+\item Further modify this function to ensure that the direction of the
+step is an ascent direction.   (If it is not, the program should take appropriate
+action.)
+\item Write code to apply the resulting modified Newton-Raphson function
+to compute maximum likelihood estimates for $\alpha$ and $\beta$
+in the Poisson regression setting.
+\end{enumerate}
+
+\vskip 5mm
+\noindent
+The Poisson distribution is given by
+$$P(Y=y) = \frac{\lambda^y e^{-\lambda}}{y!}$$
+for $\lambda > 0$. 
+
+
+```{r }
+
+poisson_obj <- function(dat, betavec){
+  u <- betavec[1] + betavec[2] * dat$x
+  mu <- exp(u)
+  n <- length(mu)
+  loglik <- sum(dat$y*u - mu - log(factorial(dat$y))) 
+  
+  #scalar
+  grad <- c(sum(dat$y - mu),
+            sum(dat$x*(dat$y - mu)))
+  
+  #vector of 2
+  Hess <- -(rbind(rep(1, n), dat$x) %*%
+          diag(mu) %*%
+          cbind(rep(1, n), dat$x))
+  
+  return(list(loglik = loglik, grad = grad, Hess = Hess))
+}
+
+```
+
+```{r}
+# Step-halving
+NR_half <- function(dat, stuff.func, start, tol = 1e-10, maxiter = 200) {
+  i <- 0
+  subit <- 1
+  halves <- 0.5^(seq(1, 30, 1))
+  cur <- start
+  stuff <- stuff.func(dat, cur)
+  res <- c(0, stuff$loglik, cur)
+  prevloglik <- -Inf
+  
+  while (i < maxiter && abs(stuff$loglik - prevloglik) > tol) {
+    i <- i + 1
+    prevloglik <- stuff$loglik
+    prev <- cur
+    d <- -solve(stuff$Hess) %*% stuff$grad
+    cur <- prev + d
+    
+    #No halving step -- lambda = 1
+    if ( stuff.func(dat, cur)$loglik > stuff.func(dat, prev)$loglik ) {
+      stuff <- stuff.func(dat, cur) # log-lik, gradient, Hessian
+      res <- rbind(res, c(i, stuff$loglik, cur))
+      # Add current values to results matrix
+    }
+    
+    #Halving step -- lambda = 0.5, 0.25, ...
+    else {
+      half_cur <- prev + (halves[subit])*d
+      while (stuff.func(dat, half_cur)$loglik <= stuff.func(dat, prev)$loglik) {
+        subit <- subit + 1
+        half_cur <- prev + (halves[subit])*d
+      }
+      cur <- half_cur
+      stuff <- stuff.func(dat, cur) # log-lik, gradient, Hessian
+      res <- rbind(res, c(i, stuff$loglik, cur))
+     
+    }
+  }
+  
+  return(res)
+}
+ 
+```
+
+
+```{r}
+NR_ascent <- function(dat, stuff.func, start, tol=1e-10, maxiter = 200) {
+  i <- 0
+  subit <- 1
+  halves <- 0.5^(seq(1, 30, 1))
+  cur <- start
+  stuff <- stuff.func(dat, cur)
+  res <- c(0, stuff$loglik, cur)
+  prevloglik <- -Inf 
+ 
+  while (i < maxiter && abs(stuff$loglik - prevloglik) > tol) {
+    i <- i + 1
+    prevloglik <- stuff$loglik
+    prev <- cur
+    d <- -solve(stuff$Hess + diag(rep(max(stuff$Hess),2))) %*% stuff$grad # replaces Hessian with similar matrix that is negative definite
+    cur <- prev + d
+    
+    # For lambda = 1
+    if (stuff.func(dat, cur)$loglik > stuff.func(dat, prev)$loglik ) {
+      stuff <- stuff.func(dat, cur) # log-lik, gradient, Hessian
+      res <- rbind(res, c(i, stuff$loglik, cur))
+      
+    } else {# For halving steps
+      
+      half_cur <- prev + (halves[subit])*d
+      
+      while (stuff.func(dat, half_cur)$loglik <= stuff.func(dat, prev)$loglik) {
+        subit <- subit + 1
+        half_cur <- prev + (halves[subit])*d
+      }
+      cur <- half_cur
+      stuff <- stuff.func(dat, cur) # log-lik, gradient, Hessian
+      res <- rbind(res, c(i, stuff$loglik, cur))
+    }
+  }
+  return(res)
+}
+```
+
+
+```{r}
+set.seed(2)
+dat <- rpois(300, 0.8)
+dat <- as.data.frame(table(dat))
+names(dat) <- c("x", "y")
+dat$x <- as.numeric(dat$x)
+print(dat)
+summary(glm(y ~ x, data = dat, family = poisson())) 
+
+NR_half(list(x = dat$x, y = dat$y), poisson_obj, start = c(-10, 10)) 
+NR_ascent(list(x = dat$x, y = dat$y), poisson_obj, start = c(-10, 10))
+```
+
+
+The Poisson model is estimated to be $log(\lambda_i) = 5.604 - 0.6x_i$.
+
+
+# Problem 3
+
+\vskip 10pt
+Consider the ABO blood type data, where you have $N_{\mbox{obs}} = (N_A,N_B,N_O,N_{AB}) = ( 26, 27, 42, 7)$.
+
+\begin{itemize}
+\item design an EM algorithm to estimate  the allele frequencies, $P_A$, $P_B$ and $P_O$; and 
+
+\item Implement your algorithms in R, and present your results..
+\end{itemize}
+
+```{r}
+# E-step evaluating conditional means E(Z_i | X_i , pars)
+# X = c(Na, Nb, Nab, No)
+# pars = c(pa, pb, po)
+delta <- function(X, pars){
+  
+  n_aa = X[1] * (pars[["pa"]]^2 / (pars[["pa"]]^2 + 2*pars[["pa"]]*pars[["po"]]))
+  n_ao = X[1] * ((2*pars[["pa"]]*pars[["po"]]) / (pars[["pa"]]^2 + 2*pars[["pa"]]*pars[["po"]]))
+  n_bb = X[2] * (pars[["pb"]]^2 / (pars[["pb"]]^2 + 2*pars[["pb"]]*pars[["po"]]))
+  n_bo = X[2] * ((2*pars[["pb"]]*pars[["po"]]) / (pars[["pb"]]^2 + 2*pars[["pb"]]*pars[["po"]]))
+  n_ab = X[3]
+  n_oo = X[4]
+  
+  return(unname(c(n_aa, n_ao, n_bb, n_bo, n_ab, n_oo)))
+}
+
+# M-step - updating the parameters
+mles <- function(Z, X) {
+  n <- sum(X)
+  
+  pa = (2*Z[1] + Z[2] + Z[5])/(2*n)
+  pb = (2*Z[3] + Z[4] + Z[5])/(2*n)
+  po = (2*Z[6] + Z[2] + Z[4])/(2*n)
+
+  return(list(pa = pa, pb = pb, po = po))
+}
+
+
+# X - the 
+EMmix <- function(X, start, nreps = 10) {
+  i <- 0
+  Z <- delta(X, start)
+  newpars <- start
+  res <- c(0, t(as.matrix(newpars)))
+  while (i < nreps) {     
+  # This should actually check for convergence
+    i <- i + 1
+    newpars <- mles(Z, X)
+    Z <- delta(X, newpars)
+    res <- rbind(res, c(i, t(as.matrix(newpars))))
+  }
+  return(res)
+}
+
+```
+
+
+```{r}
+start = c(pa = 0.3, pb = 0.1, po = 0.6)
+X = c(na = 26, nb = 27, nab = 7, no = 42)
+
+EMmix(X = X, start = start)
+```
+
+
+EM algorithm estimates $(p_a, p_b, p_o) = (0.17, 0.18, 0.64)$.
